@@ -96,6 +96,14 @@ def sample_workspace(
     return np.asarray(points)
 
 
+def inclusive_samples(lower: float, upper: float, step: float) -> np.ndarray:
+    """Return evenly stepped values and include the upper limit."""
+    values = np.arange(lower, upper, step)
+    if len(values) == 0 or not np.isclose(values[-1], upper):
+        values = np.append(values, upper)
+    return values
+
+
 def set_equal_axes(axis: plt.Axes, points: np.ndarray) -> None:
     """Set equal 3D scale using the supplied points."""
     minimum = points.min(axis=0)
@@ -243,7 +251,7 @@ def main() -> None:
     mechanism = Mechanism()
     angle_limits = ((-180.0, 180.0), (-40.0, 40.0), (-110.0, 110.0))
     sample_angles = tuple(
-        np.arange(lower, upper + arguments.step, arguments.step)
+        inclusive_samples(lower, upper, arguments.step)
         for lower, upper in angle_limits
     )
     workspace_points = sample_workspace(mechanism, sample_angles)

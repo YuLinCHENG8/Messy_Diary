@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python three_link_workspace.py
 ```
 
-默认每隔 30 度采样三个关节角，共 `13 × 4 × 8 = 416` 个末端位置。可以调整采样间隔：
+默认每隔 30 度采样三个关节角，并包含每个范围的端点，共 `13 × 4 × 9 = 468` 个末端位置。可以调整采样间隔：
 
 ```bash
 python three_link_workspace.py --step 15

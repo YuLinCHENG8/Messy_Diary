@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.widgets import Slider, TextBox
 
 
 Vector = np.ndarray
@@ -83,13 +84,13 @@ def rotation_z(angle_rad: float) -> Matrix:
 
 def sample_workspace(
     mechanism: Mechanism,
-    angle_values_deg: np.ndarray,
+    angle_values_deg: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> np.ndarray:
-    """Sample end points for the Cartesian product of three angle arrays."""
+    """Sample end points for the Cartesian product of three angle ranges."""
     points = []
-    for q1 in angle_values_deg:
-        for q2 in angle_values_deg:
-            for q3 in angle_values_deg:
+    for q1 in angle_values_deg[0]:
+        for q2 in angle_values_deg[1]:
+            for q3 in angle_values_deg[2]:
                 positions, _ = mechanism.forward_kinematics((q1, q2, q3))
                 points.append(positions[-1])
     return np.asarray(points)
@@ -119,11 +120,12 @@ def draw_frame(axis: plt.Axes, origin: Vector, rotation: Matrix, scale: float) -
 def plot_workspace(
     mechanism: Mechanism,
     workspace_points: np.ndarray,
-    pose_angles: list[tuple[float, float, float]],
+    initial_angles: tuple[float, float, float],
+    angle_limits: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
 ) -> None:
-    """Plot sampled workspace and selected serial-link poses."""
-    figure = plt.figure(figsize=(12, 6))
-    workspace_axis = figure.add_subplot(121, projection="3d")
+    """Plot workspace and provide sliders/text boxes for one live pose."""
+    figure = plt.figure(figsize=(13, 8))
+    workspace_axis = figure.add_axes((0.05, 0.20, 0.42, 0.70), projection="3d")
     workspace_axis.scatter(
         workspace_points[:, 0],
         workspace_points[:, 1],
@@ -139,28 +141,79 @@ def plot_workspace(
     set_equal_axes(workspace_axis, workspace_points)
     workspace_axis.legend()
 
-    pose_axis = figure.add_subplot(122, projection="3d")
-    pose_points = [np.zeros(3)]
+    pose_axis = figure.add_axes((0.53, 0.20, 0.42, 0.70), projection="3d")
     frame_scale = sum(mechanism.link_lengths) * 0.15
-    for angles in pose_angles:
+
+    slider_axes = [
+        figure.add_axes((0.16, 0.12, 0.28, 0.025)),
+        figure.add_axes((0.16, 0.08, 0.28, 0.025)),
+        figure.add_axes((0.16, 0.04, 0.28, 0.025)),
+    ]
+    sliders = [
+        Slider(
+            slider_axes[index],
+            f"q{index + 1} (deg)",
+            limits[0],
+            limits[1],
+            valinit=initial_angles[index],
+            valstep=1.0,
+        )
+        for index, limits in enumerate(angle_limits)
+    ]
+
+    textbox_axes = [
+        figure.add_axes((0.47, 0.12, 0.04, 0.025)),
+        figure.add_axes((0.47, 0.08, 0.04, 0.025)),
+        figure.add_axes((0.47, 0.04, 0.04, 0.025)),
+    ]
+    textboxes = [
+        TextBox(textbox_axes[index], "", initial=f"{initial_angles[index]:.0f}")
+        for index in range(3)
+    ]
+
+    def redraw_pose(angles: tuple[float, float, float]) -> None:
         positions, end_rotation = mechanism.forward_kinematics(angles)
-        pose_points.extend(positions)
+        pose_axis.clear()
         pose_axis.plot(
             [point[0] for point in positions],
             [point[1] for point in positions],
             [point[2] for point in positions],
             marker="o",
-            label=f"q={angles}°",
+            linewidth=2.0,
+            color="tab:purple",
+            label=f"q={tuple(round(angle, 1) for angle in angles)}°",
         )
         draw_frame(pose_axis, positions[-1], end_rotation, frame_scale)
+        pose_axis.set_title("Interactive pose")
+        pose_axis.set_xlabel("X")
+        pose_axis.set_ylabel("Y")
+        pose_axis.set_zlabel("Z")
+        set_equal_axes(pose_axis, np.asarray(positions))
+        pose_axis.legend(fontsize="small")
 
-    pose_axis.set_title("Representative poses")
-    pose_axis.set_xlabel("X")
-    pose_axis.set_ylabel("Y")
-    pose_axis.set_zlabel("Z")
-    set_equal_axes(pose_axis, np.asarray(pose_points))
-    pose_axis.legend(fontsize="small")
-    figure.tight_layout()
+    def update_from_sliders(_value: float) -> None:
+        angles = tuple(slider.val for slider in sliders)
+        for textbox, angle in zip(textboxes, angles):
+            textbox.set_val(f"{angle:.0f}")
+        redraw_pose(angles)
+        figure.canvas.draw_idle()
+
+    def update_from_textbox(index: int, text: str) -> None:
+        try:
+            value = float(text)
+        except ValueError:
+            textboxes[index].set_val(f"{sliders[index].val:.0f}")
+            return
+        lower, upper = angle_limits[index]
+        sliders[index].set_val(np.clip(value, lower, upper))
+
+    for slider in sliders:
+        slider.on_changed(update_from_sliders)
+    for index, textbox in enumerate(textboxes):
+        textbox.on_submit(lambda text, index=index: update_from_textbox(index, text))
+
+    redraw_pose(initial_angles)
+    figure.suptitle("Three-link workspace and interactive joint angles")
     plt.show()
 
 
@@ -188,7 +241,11 @@ def main() -> None:
         raise ValueError("--step must be greater than 0 and no greater than 360.")
 
     mechanism = Mechanism()
-    sample_angles = np.arange(-180.0, 180.0, arguments.step)
+    angle_limits = ((-180.0, 180.0), (-40.0, 40.0), (-110.0, 110.0))
+    sample_angles = tuple(
+        np.arange(lower, upper + arguments.step, arguments.step)
+        for lower, upper in angle_limits
+    )
     workspace_points = sample_workspace(mechanism, sample_angles)
     example_angles = (30.0, 25.0, -40.0)
     positions, end_rotation = mechanism.forward_kinematics(example_angles)
@@ -199,12 +256,7 @@ def main() -> None:
     print(f"End rotation Rz(q1) @ Ry(q2) @ Rx(q3):\n{end_rotation}")
 
     if not arguments.no_plot:
-        pose_angles = [
-            (0.0, 0.0, 0.0),
-            example_angles,
-            (90.0, -45.0, 60.0),
-        ]
-        plot_workspace(mechanism, workspace_points, pose_angles)
+        plot_workspace(mechanism, workspace_points, example_angles, angle_limits)
 
 
 if __name__ == "__main__":

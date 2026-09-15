@@ -163,7 +163,7 @@ def sample_reachable_workspace(
 
 
 def set_equal_axes(axis: plt.Axes, points: np.ndarray) -> None:
-    """Set equal 3D scale using the supplied points."""
+    """Set equal numeric limits and equal on-screen scale for all axes."""
     minimum = points.min(axis=0)
     maximum = points.max(axis=0)
     center = (minimum + maximum) / 2.0
@@ -171,6 +171,7 @@ def set_equal_axes(axis: plt.Axes, points: np.ndarray) -> None:
     axis.set_xlim(center[0] - radius, center[0] + radius)
     axis.set_ylim(center[1] - radius, center[1] + radius)
     axis.set_zlim(center[2] - radius, center[2] + radius)
+    axis.set_box_aspect((1.0, 1.0, 1.0))
 
 
 def draw_frame(axis: plt.Axes, origin: Vector, rotation: Matrix, scale: float) -> None:
@@ -192,6 +193,7 @@ def plot_workspace(
     """Plot reachable end space and provide sliders/text boxes for one live pose."""
     figure = plt.figure(figsize=(13, 8))
     workspace_axis = figure.add_axes((0.05, 0.20, 0.42, 0.70), projection="3d")
+    workspace_axis.mouse_init(rotate_btn=1, zoom_btn=3)
     scatter = workspace_axis.scatter(
         workspace_points[:, 0],
         workspace_points[:, 1],
@@ -204,7 +206,7 @@ def plot_workspace(
     )
     figure.colorbar(scatter, ax=workspace_axis, shrink=0.65, label="end z")
     tip_plot = workspace_axis.plot([], [], [], "o", color="tab:red", markersize=8, label="current tip")[0]
-    workspace_axis.set_title("Reachable end-effector workspace")
+    workspace_axis.set_title("Reachable workspace (drag to rotate)")
     workspace_axis.set_xlabel("X")
     workspace_axis.set_ylabel("Y")
     workspace_axis.set_zlabel("Z")
@@ -212,6 +214,7 @@ def plot_workspace(
     workspace_axis.legend(loc="upper left")
 
     pose_axis = figure.add_axes((0.53, 0.20, 0.42, 0.70), projection="3d")
+    pose_axis.mouse_init(rotate_btn=1, zoom_btn=3)
     frame_scale = sum(mechanism.link_lengths) * 0.15
     pose_bounds = np.vstack((workspace_points, np.zeros((1, 3))))
 
@@ -259,7 +262,7 @@ def plot_workspace(
             label=f"q={tuple(round(angle, 1) for angle in angles)}°",
         )
         draw_frame(pose_axis, tip, end_rotation, frame_scale)
-        pose_axis.set_title("Interactive pose")
+        pose_axis.set_title("Interactive pose (drag to rotate)")
         pose_axis.set_xlabel("X")
         pose_axis.set_ylabel("Y")
         pose_axis.set_zlabel("Z")

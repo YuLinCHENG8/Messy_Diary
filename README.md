@@ -62,3 +62,16 @@ python three_link_workspace.py --no-plot
 ```
 
 打开绘图窗口后，底部有 `q1`、`q2`、`q3` 三个滑块和对应的数值输入框。拖动滑块或输入角度并按回车，右侧机构姿态会更新；输入超出限制的数值会自动限制到允许范围内。
+
+工作空间和姿态图都支持鼠标交互：
+
+- 在 3D 坐标区域按住鼠标左键拖动：旋转视角；
+- 使用鼠标滚轮：缩放；
+- X/Y/Z 三个方向的显示比例已固定为 `1:1:1`。
+
+如果窗口完全不能拖动，通常是因为使用了非交互后端（例如 `MPLBACKEND=Agg` 或某些 IDE 的静态绘图窗口）。请在本地终端直接运行脚本，并确保安装了桌面 GUI 后端：
+
+```bash
+pip install PyQt6
+MPLBACKEND=QtAgg python3 three_link_workspace.py
+```

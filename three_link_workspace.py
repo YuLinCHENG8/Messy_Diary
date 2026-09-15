@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -295,6 +296,78 @@ def plot_workspace(
     plt.show()
 
 
+def export_workspace_html(
+    mechanism: Mechanism,
+    workspace_points: np.ndarray,
+    angles: tuple[float, float, float],
+    output_path: Path,
+) -> None:
+    """Export a rotatable and zoomable 3D workspace view as HTML."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError as error:
+        raise RuntimeError(
+            "HTML export requires Plotly. Install it with: pip install plotly"
+        ) from error
+
+    positions, end_rotation = mechanism.forward_kinematics(angles)
+    end_point = positions[-1]
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter3d(
+            x=workspace_points[:, 0],
+            y=workspace_points[:, 1],
+            z=workspace_points[:, 2],
+            mode="markers",
+            marker={
+                "size": 2,
+                "color": workspace_points[:, 2],
+                "colorscale": "Viridis",
+                "opacity": 0.35,
+                "colorbar": {"title": "end z"},
+            },
+            name="reachable workspace",
+        )
+    )
+    figure.add_trace(
+        go.Scatter3d(
+            x=[point[0] for point in positions],
+            y=[point[1] for point in positions],
+            z=[point[2] for point in positions],
+            mode="lines+markers",
+            line={"color": "purple", "width": 8},
+            marker={"size": 5},
+            name="current pose",
+        )
+    )
+    figure.add_trace(
+        go.Scatter3d(
+            x=[end_point[0]],
+            y=[end_point[1]],
+            z=[end_point[2]],
+            mode="markers",
+            marker={"color": "red", "size": 7},
+            name="current tip",
+        )
+    )
+    figure.update_layout(
+        title=(
+            "Reachable end-effector workspace"
+            f" | q=({angles[0]:.1f}, {angles[1]:.1f}, {angles[2]:.1f})°"
+        ),
+        scene={
+            "xaxis": {"title": "X", "scaleanchor": "y"},
+            "yaxis": {"title": "Y", "scaleanchor": "x"},
+            "zaxis": {"title": "Z"},
+            "aspectmode": "cube",
+        },
+        width=1100,
+        height=750,
+    )
+    figure.write_html(output_path, include_plotlyjs=True)
+    print(f"Interactive HTML exported to: {output_path}")
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line options."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -308,6 +381,11 @@ def parse_arguments() -> argparse.Namespace:
         "--no-plot",
         action="store_true",
         help="Print the example pose without opening a plot window.",
+    )
+    parser.add_argument(
+        "--export-html",
+        type=Path,
+        help="Export the fixed workspace and current pose to an interactive HTML file.",
     )
     return parser.parse_args()
 
@@ -334,6 +412,14 @@ def main() -> None:
     print(f"Example angles (q1, q2, q3) [deg]: {example_angles}")
     print(f"End position [x, y, z]:\n{positions[-1]}")
     print(f"End rotation Rz(q1) @ Ry(q2) @ Rx(q3):\n{end_rotation}")
+
+    if arguments.export_html is not None:
+        export_workspace_html(
+            mechanism,
+            workspace_points,
+            example_angles,
+            arguments.export_html,
+        )
 
     if not arguments.no_plot:
         plot_workspace(mechanism, workspace_points, example_angles, angle_limits)

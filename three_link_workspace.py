@@ -356,8 +356,8 @@ def export_workspace_html(
             f" | q=({angles[0]:.1f}, {angles[1]:.1f}, {angles[2]:.1f})°"
         ),
         scene={
-            "xaxis": {"title": "X", "scaleanchor": "y"},
-            "yaxis": {"title": "Y", "scaleanchor": "x"},
+            "xaxis": {"title": "X"},
+            "yaxis": {"title": "Y"},
             "zaxis": {"title": "Z"},
             "aspectmode": "cube",
         },

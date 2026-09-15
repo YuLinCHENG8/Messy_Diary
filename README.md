@@ -1,6 +1,6 @@
 # 三连杆三维工作空间示意
 
-这个示例用 Python、NumPy 和 Matplotlib 描绘一个三连杆串联机构的三维工作空间，并显示若干角度下的机构姿态和末端坐标系。
+这个示例用 Python、NumPy 和 Matplotlib 描绘一个三连杆串联机构的三维工作空间，并显示可交互姿态。左侧点云是关节角限制内、末端执行器能到达的位置集合。
 
 ## 模型约定
 
@@ -49,10 +49,10 @@ pip install -r requirements.txt
 python three_link_workspace.py
 ```
 
-默认每隔 30 度采样三个关节角，并包含每个范围的端点，共 `13 × 4 × 9 = 468` 个末端位置。可以调整采样间隔：
+默认按关节分别密采样末端可达点：`q1` 步长由 `--step` 控制（默认 10°），`q2`/`q3` 自动更密，从而得到连续的可达点云而不是稀疏壳层。可以调整基础采样间隔：
 
 ```bash
-python three_link_workspace.py --step 15
+python three_link_workspace.py --step 5
 ```
 
 只计算并打印示例位姿、不打开绘图窗口：

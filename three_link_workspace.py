@@ -42,6 +42,48 @@ class Mechanism:
 
         return [base, joint_1, joint_2, end], end_rotation
 
+    def end_positions(self, angles_deg: np.ndarray) -> np.ndarray:
+        """Vectorized end-effector positions for many joint-angle samples.
+
+        Args:
+            angles_deg: Array of shape (N, 3) with columns [q1, q2, q3] in degrees.
+
+        Returns:
+            Array of shape (N, 3) with reachable end-effector positions.
+        """
+        q1 = np.deg2rad(angles_deg[:, 0])
+        q2 = np.deg2rad(angles_deg[:, 1])
+        q3 = np.deg2rad(angles_deg[:, 2])
+        l1, l2, l3 = self.link_lengths
+
+        cos_q1 = np.cos(q1)
+        sin_q1 = np.sin(q1)
+        cos_q2 = np.cos(q2)
+        sin_q2 = np.sin(q2)
+        cos_q3 = np.cos(q3)
+        sin_q3 = np.sin(q3)
+
+        # Link 1 after Rz(q1): still along world z.
+        p1 = np.column_stack((np.zeros_like(q1), np.zeros_like(q1), np.full_like(q1, l1)))
+
+        # Link 2 after Rz(q1) Ry(q2): local z becomes [sin(q2), 0, cos(q2)], then Rz.
+        direction_2 = np.column_stack(
+            (
+                cos_q1 * sin_q2,
+                sin_q1 * sin_q2,
+                cos_q2,
+            )
+        )
+        p2 = p1 + l2 * direction_2
+
+        # Link 3 after Rz(q1) Ry(q2) Rx(q3): local z mapped by the full rotation.
+        # R @ [0,0,1] equals the third column of R = Rz Ry Rx.
+        direction_3_x = cos_q1 * sin_q2 * cos_q3 + sin_q1 * sin_q3
+        direction_3_y = sin_q1 * sin_q2 * cos_q3 - cos_q1 * sin_q3
+        direction_3_z = cos_q2 * cos_q3
+        direction_3 = np.column_stack((direction_3_x, direction_3_y, direction_3_z))
+        return p2 + l3 * direction_3
+
 
 def rotation_x(angle_rad: float) -> Matrix:
     """Return an active rotation about the x-axis."""
@@ -82,26 +124,42 @@ def rotation_z(angle_rad: float) -> Matrix:
     )
 
 
-def sample_workspace(
-    mechanism: Mechanism,
-    angle_values_deg: tuple[np.ndarray, np.ndarray, np.ndarray],
-) -> np.ndarray:
-    """Sample end points for the Cartesian product of three angle ranges."""
-    points = []
-    for q1 in angle_values_deg[0]:
-        for q2 in angle_values_deg[1]:
-            for q3 in angle_values_deg[2]:
-                positions, _ = mechanism.forward_kinematics((q1, q2, q3))
-                points.append(positions[-1])
-    return np.asarray(points)
-
-
 def inclusive_samples(lower: float, upper: float, step: float) -> np.ndarray:
     """Return evenly stepped values and include the upper limit."""
     values = np.arange(lower, upper, step)
     if len(values) == 0 or not np.isclose(values[-1], upper):
         values = np.append(values, upper)
     return values
+
+
+def default_joint_steps(base_step: float) -> tuple[float, float, float]:
+    """Choose denser steps for the smaller joint ranges."""
+    return (
+        base_step,
+        max(base_step / 6.0, 1.0),
+        max(base_step / 3.0, 2.0),
+    )
+
+
+def sample_reachable_workspace(
+    mechanism: Mechanism,
+    angle_limits: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+    steps_deg: tuple[float, float, float],
+) -> np.ndarray:
+    """Sample reachable end-effector positions inside joint limits."""
+    angle_grids = [
+        inclusive_samples(limits[0], limits[1], step)
+        for limits, step in zip(angle_limits, steps_deg)
+    ]
+    q1_grid, q2_grid, q3_grid = np.meshgrid(*angle_grids, indexing="ij")
+    angles = np.column_stack(
+        (
+            q1_grid.ravel(),
+            q2_grid.ravel(),
+            q3_grid.ravel(),
+        )
+    )
+    return mechanism.end_positions(angles)
 
 
 def set_equal_axes(axis: plt.Axes, points: np.ndarray) -> None:
@@ -131,26 +189,31 @@ def plot_workspace(
     initial_angles: tuple[float, float, float],
     angle_limits: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
 ) -> None:
-    """Plot workspace and provide sliders/text boxes for one live pose."""
+    """Plot reachable end space and provide sliders/text boxes for one live pose."""
     figure = plt.figure(figsize=(13, 8))
     workspace_axis = figure.add_axes((0.05, 0.20, 0.42, 0.70), projection="3d")
-    workspace_axis.scatter(
+    scatter = workspace_axis.scatter(
         workspace_points[:, 0],
         workspace_points[:, 1],
         workspace_points[:, 2],
-        s=8,
-        alpha=0.25,
-        label="end-effector workspace",
+        c=workspace_points[:, 2],
+        cmap="viridis",
+        s=4,
+        alpha=0.35,
+        linewidths=0.0,
     )
-    workspace_axis.set_title("Sampled 3D workspace")
+    figure.colorbar(scatter, ax=workspace_axis, shrink=0.65, label="end z")
+    tip_plot = workspace_axis.plot([], [], [], "o", color="tab:red", markersize=8, label="current tip")[0]
+    workspace_axis.set_title("Reachable end-effector workspace")
     workspace_axis.set_xlabel("X")
     workspace_axis.set_ylabel("Y")
     workspace_axis.set_zlabel("Z")
     set_equal_axes(workspace_axis, workspace_points)
-    workspace_axis.legend()
+    workspace_axis.legend(loc="upper left")
 
     pose_axis = figure.add_axes((0.53, 0.20, 0.42, 0.70), projection="3d")
     frame_scale = sum(mechanism.link_lengths) * 0.15
+    pose_bounds = np.vstack((workspace_points, np.zeros((1, 3))))
 
     slider_axes = [
         figure.add_axes((0.16, 0.12, 0.28, 0.025)),
@@ -181,6 +244,10 @@ def plot_workspace(
 
     def redraw_pose(angles: tuple[float, float, float]) -> None:
         positions, end_rotation = mechanism.forward_kinematics(angles)
+        tip = positions[-1]
+        tip_plot.set_data([tip[0]], [tip[1]])
+        tip_plot.set_3d_properties([tip[2]])
+
         pose_axis.clear()
         pose_axis.plot(
             [point[0] for point in positions],
@@ -191,16 +258,16 @@ def plot_workspace(
             color="tab:purple",
             label=f"q={tuple(round(angle, 1) for angle in angles)}°",
         )
-        draw_frame(pose_axis, positions[-1], end_rotation, frame_scale)
+        draw_frame(pose_axis, tip, end_rotation, frame_scale)
         pose_axis.set_title("Interactive pose")
         pose_axis.set_xlabel("X")
         pose_axis.set_ylabel("Y")
         pose_axis.set_zlabel("Z")
-        set_equal_axes(pose_axis, np.asarray(positions))
+        set_equal_axes(pose_axis, pose_bounds)
         pose_axis.legend(fontsize="small")
 
     def update_from_sliders(_value: float) -> None:
-        angles = tuple(slider.val for slider in sliders)
+        angles = tuple(float(slider.val) for slider in sliders)
         for textbox, angle in zip(textboxes, angles):
             textbox.set_val(f"{angle:.0f}")
         redraw_pose(angles)
@@ -213,7 +280,7 @@ def plot_workspace(
             textboxes[index].set_val(f"{sliders[index].val:.0f}")
             return
         lower, upper = angle_limits[index]
-        sliders[index].set_val(np.clip(value, lower, upper))
+        sliders[index].set_val(float(np.clip(value, lower, upper)))
 
     for slider in sliders:
         slider.on_changed(update_from_sliders)
@@ -221,7 +288,7 @@ def plot_workspace(
         textbox.on_submit(lambda text, index=index: update_from_textbox(index, text))
 
     redraw_pose(initial_angles)
-    figure.suptitle("Three-link workspace and interactive joint angles")
+    figure.suptitle("Reachable tip workspace within joint limits")
     plt.show()
 
 
@@ -231,8 +298,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--step",
         type=float,
-        default=30.0,
-        help="Sampling step for all three joint angles in degrees.",
+        default=10.0,
+        help="Base sampling step for q1 in degrees. q2/q3 use denser steps automatically.",
     )
     parser.add_argument(
         "--no-plot",
@@ -250,15 +317,17 @@ def main() -> None:
 
     mechanism = Mechanism()
     angle_limits = ((-180.0, 180.0), (-40.0, 40.0), (-110.0, 110.0))
-    sample_angles = tuple(
-        inclusive_samples(lower, upper, arguments.step)
-        for lower, upper in angle_limits
-    )
-    workspace_points = sample_workspace(mechanism, sample_angles)
+    steps_deg = default_joint_steps(arguments.step)
+    workspace_points = sample_reachable_workspace(mechanism, angle_limits, steps_deg)
     example_angles = (30.0, 25.0, -40.0)
     positions, end_rotation = mechanism.forward_kinematics(example_angles)
 
+    horizontal_radius = np.linalg.norm(workspace_points[:, :2], axis=1)
     print(f"Sample count: {len(workspace_points)}")
+    print(f"Joint steps [deg]: q1={steps_deg[0]}, q2={steps_deg[1]}, q3={steps_deg[2]}")
+    print(f"Reachable XYZ min: {workspace_points.min(axis=0)}")
+    print(f"Reachable XYZ max: {workspace_points.max(axis=0)}")
+    print(f"Reachable XY radius range: [{horizontal_radius.min():.2f}, {horizontal_radius.max():.2f}]")
     print(f"Example angles (q1, q2, q3) [deg]: {example_angles}")
     print(f"End position [x, y, z]:\n{positions[-1]}")
     print(f"End rotation Rz(q1) @ Ry(q2) @ Rx(q3):\n{end_rotation}")

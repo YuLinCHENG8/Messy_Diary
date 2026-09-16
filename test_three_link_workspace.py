@@ -1,0 +1,135 @@
+"""Tests for continuous, workspace-limited inverse kinematics."""
+
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+
+from three_link_workspace import (
+    DEFAULT_ANGLE_LIMITS,
+    Mechanism,
+    clip_angles_deg,
+    continuous_angle_deg,
+    wrap_angle_deg,
+)
+
+
+def forward_tip(mechanism: Mechanism, angles: tuple[float, float, float]) -> np.ndarray:
+    """Return the end-effector position for a joint tuple."""
+    return mechanism.end_positions(np.array([angles], dtype=float))[0]
+
+
+class WrapAngleTests(unittest.TestCase):
+    def test_wrap_keeps_values_inside_half_turn(self) -> None:
+        self.assertAlmostEqual(wrap_angle_deg(181.0), -179.0)
+        self.assertAlmostEqual(wrap_angle_deg(-181.0), 179.0)
+
+    def test_continuous_angle_does_not_jump_across_the_cut(self) -> None:
+        unwrapped = continuous_angle_deg(-179.0, 179.0)
+        self.assertAlmostEqual(unwrapped, 181.0)
+        clipped = clip_angles_deg((unwrapped, 0.0, 0.0), DEFAULT_ANGLE_LIMITS)
+        self.assertAlmostEqual(clipped[0], 180.0)
+
+
+class JacobianTests(unittest.TestCase):
+    def test_analytic_jacobian_matches_finite_difference(self) -> None:
+        mechanism = Mechanism()
+        angles = (30.0, 25.0, -40.0)
+        jacobian = mechanism.position_jacobian(angles)
+        epsilon_rad = 1e-6
+        for index in range(3):
+            delta = np.zeros(3)
+            delta[index] = np.rad2deg(epsilon_rad)
+            plus = forward_tip(mechanism, tuple(np.array(angles) + delta))
+            minus = forward_tip(mechanism, tuple(np.array(angles) - delta))
+            numeric = (plus - minus) / (2.0 * epsilon_rad)
+            np.testing.assert_allclose(jacobian[:, index], numeric, atol=1e-6)
+
+
+class InverseKinematicsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mechanism = Mechanism()
+
+    def test_nearby_cartesian_target_is_reached_without_joint_jump(self) -> None:
+        start = (30.0, 20.0, -30.0)
+        goal_angles = (40.0, 10.0, -20.0)
+        result = self.mechanism.inverse_kinematics(forward_tip(self.mechanism, goal_angles), start)
+        self.assertTrue(result.reachable)
+        np.testing.assert_allclose(result.position, forward_tip(self.mechanism, goal_angles), atol=1e-3)
+        self.assertLess(max(abs(a - b) for a, b in zip(result.angles_deg, start)), 25.0)
+
+    def test_q1_stops_at_180_instead_of_wrapping_to_negative(self) -> None:
+        previous = (160.0, 15.0, 20.0)
+        history = [previous]
+        for command_q1 in np.linspace(162.0, 200.0, 20):
+            target = forward_tip(self.mechanism, (float(command_q1), 15.0, 20.0))
+            result = self.mechanism.inverse_kinematics(target, previous)
+            delta_q1 = result.angles_deg[0] - previous[0]
+            self.assertLess(abs(delta_q1), 15.0)
+            self.assertGreaterEqual(result.angles_deg[0], -180.0)
+            self.assertLessEqual(result.angles_deg[0], 180.0)
+            previous = result.angles_deg
+            history.append(previous)
+
+        self.assertGreater(history[-1][0], 170.0)
+        self.assertAlmostEqual(history[-1][0], 180.0, delta=1.0)
+        self.assertFalse(any(angles[0] < 0.0 for angles in history))
+
+    def test_free_joints_keep_moving_after_q1_hits_the_cut(self) -> None:
+        previous = (180.0, 8.0, 25.0)
+        start_q2, start_q3 = previous[1], previous[2]
+        target = forward_tip(self.mechanism, (200.0, 8.0, 25.0))
+        result = self.mechanism.inverse_kinematics(target, previous)
+        self.assertAlmostEqual(result.angles_deg[0], 180.0, delta=1e-3)
+        self.assertTrue(result.saturated[0])
+        moved_free = abs(result.angles_deg[1] - start_q2) > 0.05 or abs(result.angles_deg[2] - start_q3) > 0.05
+        self.assertTrue(moved_free)
+        self.assertFalse(result.reachable)
+
+    def test_q3_at_limit_still_allows_q1_to_track_azimuth(self) -> None:
+        start = (20.0, 10.0, 110.0)
+        start_tip = forward_tip(self.mechanism, start)
+        radius = float(np.hypot(start_tip[0], start_tip[1]))
+        previous = start
+        q1_values = []
+        for azimuth_deg in (40.0, 70.0, 100.0, 130.0):
+            target = np.array(
+                [
+                    radius * np.cos(np.deg2rad(azimuth_deg)),
+                    radius * np.sin(np.deg2rad(azimuth_deg)),
+                    start_tip[2],
+                ]
+            )
+            result = self.mechanism.inverse_kinematics(target, previous)
+            self.assertTrue(result.saturated[2])
+            self.assertGreater(result.angles_deg[0], previous[0] + 5.0)
+            q1_values.append(result.angles_deg[0])
+            previous = result.angles_deg
+        self.assertEqual(q1_values, sorted(q1_values))
+
+    def test_far_target_stays_inside_joint_limits_and_leans_toward_it(self) -> None:
+        start = (30.0, 10.0, -20.0)
+        target = np.array([200.0, 200.0, 200.0])
+        result = self.mechanism.inverse_kinematics(target, start)
+        lower = np.array([limits[0] for limits in DEFAULT_ANGLE_LIMITS])
+        upper = np.array([limits[1] for limits in DEFAULT_ANGLE_LIMITS])
+        np.testing.assert_array_less(lower - 1e-9, np.array(result.angles_deg))
+        np.testing.assert_array_less(np.array(result.angles_deg), upper + 1e-9)
+        self.assertFalse(result.reachable)
+        self.assertTrue(any(result.saturated))
+        self.assertGreater(result.position[0], 0.0)
+        self.assertGreater(result.position[1], 0.0)
+        self.assertLess(abs(wrap_angle_deg(result.angles_deg[0] - 45.0)), 50.0)
+
+    def test_q1_locked_at_limit_still_lets_q2_follow_height(self) -> None:
+        start = (180.0, 5.0, 10.0)
+        high = self.mechanism.inverse_kinematics(np.array([-35.0, 0.0, 148.0]), start)
+        low = self.mechanism.inverse_kinematics(np.array([-35.0, 0.0, 120.0]), high.angles_deg)
+        self.assertAlmostEqual(high.angles_deg[0], 180.0, delta=1e-3)
+        self.assertAlmostEqual(low.angles_deg[0], 180.0, delta=1e-3)
+        self.assertGreater(abs(low.angles_deg[1] - high.angles_deg[1]), 1.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

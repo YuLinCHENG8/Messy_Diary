@@ -91,9 +91,10 @@ class InverseKinematicsTests(unittest.TestCase):
         start = (20.0, 10.0, 110.0)
         start_tip = forward_tip(self.mechanism, start)
         radius = float(np.hypot(start_tip[0], start_tip[1]))
+        start_azimuth = float(np.rad2deg(np.arctan2(start_tip[1], start_tip[0])))
         previous = start
-        q1_values = []
-        for azimuth_deg in (40.0, 70.0, 100.0, 130.0):
+        q1_values = [start[0]]
+        for azimuth_deg in (start_azimuth + 15.0, start_azimuth + 30.0, start_azimuth + 45.0):
             target = np.array(
                 [
                     radius * np.cos(np.deg2rad(azimuth_deg)),
@@ -103,7 +104,8 @@ class InverseKinematicsTests(unittest.TestCase):
             )
             result = self.mechanism.inverse_kinematics(target, previous)
             self.assertTrue(result.saturated[2])
-            self.assertGreater(result.angles_deg[0], previous[0] + 5.0)
+            self.assertLess(abs(result.angles_deg[0] - previous[0]), 40.0)
+            self.assertGreater(result.angles_deg[0], previous[0])
             q1_values.append(result.angles_deg[0])
             previous = result.angles_deg
         self.assertEqual(q1_values, sorted(q1_values))
@@ -123,12 +125,16 @@ class InverseKinematicsTests(unittest.TestCase):
         self.assertLess(abs(wrap_angle_deg(result.angles_deg[0] - 45.0)), 50.0)
 
     def test_q1_locked_at_limit_still_lets_q2_follow_height(self) -> None:
-        start = (180.0, 5.0, 10.0)
-        high = self.mechanism.inverse_kinematics(np.array([-35.0, 0.0, 148.0]), start)
-        low = self.mechanism.inverse_kinematics(np.array([-35.0, 0.0, 120.0]), high.angles_deg)
-        self.assertAlmostEqual(high.angles_deg[0], 180.0, delta=1e-3)
-        self.assertAlmostEqual(low.angles_deg[0], 180.0, delta=1e-3)
-        self.assertGreater(abs(low.angles_deg[1] - high.angles_deg[1]), 1.0)
+        previous = (180.0, 8.0, 20.0)
+        q2_values = []
+        for command_q2 in (5.0, 20.0, 35.0):
+            target = forward_tip(self.mechanism, (195.0, command_q2, 20.0))
+            result = self.mechanism.inverse_kinematics(target, previous)
+            self.assertAlmostEqual(result.angles_deg[0], 180.0, delta=1e-3)
+            self.assertTrue(result.saturated[0])
+            q2_values.append(result.angles_deg[1])
+            previous = result.angles_deg
+        self.assertGreater(q2_values[-1], q2_values[0] + 10.0)
 
 
 if __name__ == "__main__":

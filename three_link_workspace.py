@@ -149,21 +149,48 @@ class Mechanism:
         """Track a Cartesian target without leaving the joint-limit workspace.
 
         The solver starts from ``previous_angles_deg`` and never wraps a joint
-        across a branch cut such as ±180°. Joints that are already at a limit
-        and would move further out are locked; the remaining free joints keep
-        reducing the Cartesian error through a reduced damped least-squares step.
+        across a branch cut such as ±180°. The Cartesian target is not clipped to
+        the reachable workspace: commands may lie anywhere. Joints that are
+        already at a limit and would move further out are locked; the remaining
+        free joints keep reducing the Cartesian error through a reduced damped
+        least-squares step.
+        """
+        return self.inverse_kinematics_path(
+            target,
+            previous_angles_deg,
+            angle_limits=angle_limits,
+            position_tolerance=position_tolerance,
+            max_iterations=max_iterations,
+            max_step_deg=max_step_deg,
+            damping=damping,
+        )[-1]
+
+    def inverse_kinematics_path(
+        self,
+        target: Vector,
+        previous_angles_deg: tuple[float, float, float],
+        angle_limits: JointLimits = DEFAULT_ANGLE_LIMITS,
+        position_tolerance: float = REACHABLE_POSITION_TOLERANCE,
+        max_iterations: int = 80,
+        max_step_deg: float = 20.0,
+        damping: float = 1e-3,
+    ) -> list[InverseKinematicsResult]:
+        """Return every DLS iterate from the previous pose toward ``target``.
+
+        The target is used as given. Only joint limits are enforced.
         """
         target = np.asarray(target, dtype=float)
         angles = np.array(previous_angles_deg, dtype=float)
         lower, upper = limit_arrays(angle_limits)
         position = self.end_positions(angles.reshape(1, 3))[0]
         error_norm = float(np.linalg.norm(target - position))
+        path = [self._ik_result(angles, position, error_norm, angle_limits, 0)]
         if error_norm <= position_tolerance:
-            return self._ik_result(angles, position, error_norm, angle_limits, 0)
+            return path
 
         for used_iterations in range(1, max_iterations + 1):
             if error_norm <= position_tolerance:
-                return self._ik_result(angles, position, error_norm, angle_limits, used_iterations)
+                return path
 
             error = target - position
             current_angles = tuple(float(angle) for angle in angles)
@@ -180,7 +207,7 @@ class Mechanism:
             if step_scale > max_step_deg:
                 delta_deg *= max_step_deg / step_scale
             if float(np.linalg.norm(delta_deg)) < 1e-10:
-                return self._ik_result(angles, position, error_norm, angle_limits, used_iterations)
+                return path
 
             next_angles = np.clip(angles + delta_deg, lower, upper)
             next_position = self.end_positions(next_angles.reshape(1, 3))[0]
@@ -196,15 +223,18 @@ class Mechanism:
                 shrink_count += 1
             if next_error >= error_norm - 1e-12:
                 if next_error < error_norm:
-                    return self._ik_result(
-                        next_angles, next_position, next_error, angle_limits, used_iterations
+                    path.append(
+                        self._ik_result(
+                            next_angles, next_position, next_error, angle_limits, used_iterations
+                        )
                     )
-                return self._ik_result(angles, position, error_norm, angle_limits, used_iterations)
+                return path
             angles = next_angles
             position = next_position
             error_norm = next_error
+            path.append(self._ik_result(angles, position, error_norm, angle_limits, used_iterations))
 
-        return self._ik_result(angles, position, error_norm, angle_limits, used_iterations)
+        return path
 
     def _ik_result(
         self,
@@ -738,6 +768,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Export the fixed workspace and current pose to an interactive HTML file.",
     )
+    parser.add_argument(
+        "--mujoco",
+        action="store_true",
+        help="Open the MuJoCo viewer and stream IK iterates toward an unconstrained target.",
+    )
     return parser.parse_args()
 
 
@@ -749,9 +784,15 @@ def main() -> None:
 
     mechanism = Mechanism()
     angle_limits = DEFAULT_ANGLE_LIMITS
+    example_angles = (30.0, 25.0, -40.0)
+    if arguments.mujoco:
+        from three_link_mujoco import run_interactive_viewer
+
+        run_interactive_viewer(mechanism, angle_limits, example_angles)
+        return
+
     steps_deg = default_joint_steps(arguments.step)
     workspace_points = sample_reachable_workspace(mechanism, angle_limits, steps_deg)
-    example_angles = (30.0, 25.0, -40.0)
     positions, end_rotation = mechanism.forward_kinematics(example_angles)
 
     horizontal_radius = np.linalg.norm(workspace_points[:, :2], axis=1)

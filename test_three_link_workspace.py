@@ -137,5 +137,70 @@ class InverseKinematicsTests(unittest.TestCase):
         self.assertGreater(q2_values[-1], q2_values[0] + 10.0)
 
 
+    def test_ik_path_records_iterates_and_does_not_clip_the_cartesian_target(self) -> None:
+        start = (30.0, 10.0, -20.0)
+        target = np.array([200.0, 200.0, 200.0])
+        path = self.mechanism.inverse_kinematics_path(target, start)
+        self.assertGreater(len(path), 1)
+        self.assertFalse(path[-1].reachable)
+        np.testing.assert_allclose(target, [200.0, 200.0, 200.0])
+        lower = np.array([limits[0] for limits in DEFAULT_ANGLE_LIMITS])
+        upper = np.array([limits[1] for limits in DEFAULT_ANGLE_LIMITS])
+        for step in path:
+            np.testing.assert_array_less(lower - 1e-9, np.array(step.angles_deg))
+            np.testing.assert_array_less(np.array(step.angles_deg), upper + 1e-9)
+            delta = max(abs(a - b) for a, b in zip(step.angles_deg, path[0].angles_deg))
+            self.assertLess(delta, 181.0)
+
+
+try:
+    import mujoco
+except ImportError:
+    mujoco = None
+
+
+@unittest.skipUnless(mujoco is not None, "mujoco is not installed")
+class MujocoIkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from three_link_mujoco import load_mujoco_arm
+
+        self.mechanism = Mechanism()
+        self.arm = load_mujoco_arm(self.mechanism)
+
+    def test_mujoco_forward_kinematics_matches_analytical_model(self) -> None:
+        samples = (
+            (0.0, 0.0, 0.0),
+            (30.0, 25.0, -40.0),
+            (-90.0, 40.0, 110.0),
+            (180.0, -15.0, 20.0),
+        )
+        for angles in samples:
+            analytical = forward_tip(self.mechanism, angles)
+            self.arm.set_angles_deg(angles)
+            np.testing.assert_allclose(self.arm.tip_position(), analytical, atol=1e-6)
+
+    def test_unconstrained_target_is_written_verbatim_to_mocap(self) -> None:
+        outside = np.array([200.0, -150.0, 10.0])
+        self.arm.set_target(outside)
+        np.testing.assert_allclose(self.arm.target_position(), outside)
+        result = self.mechanism.inverse_kinematics(self.arm.target_position(), (30.0, 25.0, -40.0))
+        self.assertFalse(result.reachable)
+        lower = np.array([limits[0] for limits in DEFAULT_ANGLE_LIMITS])
+        upper = np.array([limits[1] for limits in DEFAULT_ANGLE_LIMITS])
+        np.testing.assert_array_less(lower - 1e-9, np.array(result.angles_deg))
+        np.testing.assert_array_less(np.array(result.angles_deg), upper + 1e-9)
+
+    def test_scripted_demo_keeps_joints_limited_for_out_of_workspace_targets(self) -> None:
+        from three_link_mujoco import run_scripted_demo
+
+        history = run_scripted_demo(self.mechanism, self.arm, DEFAULT_ANGLE_LIMITS, hold_frames=0)
+        self.assertTrue(any(not frame["reachable"] for frame in history))
+        lower = np.array([limits[0] for limits in DEFAULT_ANGLE_LIMITS])
+        upper = np.array([limits[1] for limits in DEFAULT_ANGLE_LIMITS])
+        for frame in history:
+            np.testing.assert_array_less(lower - 1e-9, np.array(frame["angles_deg"]))
+            np.testing.assert_array_less(np.array(frame["angles_deg"]), upper + 1e-9)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,13 @@ import unittest
 
 import numpy as np
 
+from compare_standard_dh import (
+    TOOL_TRANSFORM,
+    compare_forward_kinematics,
+    standard_dh_forward_transform,
+    standard_dh_transform,
+    verify_random_angles,
+)
 from three_link_workspace import (
     DEFAULT_ANGLE_LIMITS,
     Mechanism,
@@ -45,6 +52,76 @@ class JacobianTests(unittest.TestCase):
             minus = forward_tip(mechanism, tuple(np.array(angles) - delta))
             numeric = (plus - minus) / (2.0 * epsilon_rad)
             np.testing.assert_allclose(jacobian[:, index], numeric, atol=1e-6)
+
+
+class StandardDhTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mechanism = Mechanism()
+
+    def test_standard_dh_matrix_uses_classic_operation_order(self) -> None:
+        theta = 32.0
+        d = 7.0
+        a = 11.0
+        alpha = -48.0
+        transform = standard_dh_transform(theta, d, a, alpha)
+        rotation_z = np.eye(4)
+        rotation_z[:3, :3] = np.array(
+            [
+                [np.cos(np.deg2rad(theta)), -np.sin(np.deg2rad(theta)), 0.0],
+                [np.sin(np.deg2rad(theta)), np.cos(np.deg2rad(theta)), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        translation_z = np.eye(4)
+        translation_z[2, 3] = d
+        translation_x = np.eye(4)
+        translation_x[0, 3] = a
+        rotation_x = np.eye(4)
+        rotation_x[:3, :3] = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, np.cos(np.deg2rad(alpha)), -np.sin(np.deg2rad(alpha))],
+                [0.0, np.sin(np.deg2rad(alpha)), np.cos(np.deg2rad(alpha))],
+            ]
+        )
+        expected = rotation_z @ translation_z @ translation_x @ rotation_x
+        np.testing.assert_allclose(transform, expected, atol=1e-12)
+
+    def test_dh_origin_matches_original_but_axes_need_tool_alignment(self) -> None:
+        angles = (30.0, 25.0, -40.0)
+        comparison = compare_forward_kinematics(self.mechanism, angles)
+        np.testing.assert_allclose(
+            comparison.dh_transform[:3, 3],
+            comparison.original_transform[:3, 3],
+            atol=1e-12,
+        )
+        self.assertGreater(
+            np.linalg.norm(
+                comparison.dh_transform[:3, :3]
+                - comparison.original_transform[:3, :3]
+            ),
+            1.0,
+        )
+        np.testing.assert_allclose(
+            comparison.dh_transform @ TOOL_TRANSFORM,
+            comparison.original_transform,
+            atol=1e-12,
+        )
+
+    def test_aligned_standard_dh_matches_original_fk_for_random_angles(self) -> None:
+        position_error, rotation_error = verify_random_angles(
+            self.mechanism,
+            sample_count=1000,
+            seed=17,
+        )
+        self.assertLess(position_error, 1e-9)
+        self.assertLess(rotation_error, 1e-9)
+
+    def test_standard_dh_helper_returns_aligned_tool_pose(self) -> None:
+        angles = (-120.0, -35.0, 95.0)
+        aligned = standard_dh_forward_transform(self.mechanism, angles)
+        comparison = compare_forward_kinematics(self.mechanism, angles)
+        np.testing.assert_allclose(aligned, comparison.original_transform, atol=1e-12)
 
 
 class InverseKinematicsTests(unittest.TestCase):

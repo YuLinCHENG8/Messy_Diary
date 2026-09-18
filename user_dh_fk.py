@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 
 
-LINK_LENGTHS = (100.0, 20.0, 30.0)
+LINK_LENGTHS = (96.0, 47.0, 48.0)
 
 
 def standard_dh(
@@ -53,14 +53,14 @@ def forward_kinematics(
     The supplied table is:
 
         i  theta_i       d_i  a_i  alpha_i
-        1  q1 + 90 deg    L1    0      -90 deg
-        2  q2 + 90 deg     0    L2      +90 deg
-        3  q3              0    L3        0 deg
+        1  q1 + 90 deg    96    0      +90 deg
+        2  q2 + 90 deg     0   47      +90 deg
+        3  q3               0   48        0 deg
     """
     q1, q2, q3 = angles_deg
     length_1, length_2, length_3 = link_lengths
 
-    transform_01 = standard_dh(q1 + 90.0, length_1, 0.0, -90.0)
+    transform_01 = standard_dh(q1 + 90.0, length_1, 0.0, 90.0)
     transform_12 = standard_dh(q2 + 90.0, 0.0, length_2, 90.0)
     transform_23 = standard_dh(q3, 0.0, length_3, 0.0)
 
@@ -99,26 +99,26 @@ def explicit_end_transform(
     return np.array(
         [
             [
-                cos_1 * cos_2 * cos_3 - sin_1 * sin_3,
-                -cos_1 * cos_2 * sin_3 - sin_1 * cos_3,
+                cos_1 * cos_2 * cos_3 + sin_1 * sin_3,
+                -cos_1 * cos_2 * sin_3 + sin_1 * cos_3,
                 cos_1 * sin_2,
                 length_2 * cos_1 * cos_2
-                + length_3 * (cos_1 * cos_2 * cos_3 - sin_1 * sin_3),
+                + length_3 * (cos_1 * cos_2 * cos_3 + sin_1 * sin_3),
             ],
             [
-                sin_1 * cos_2 * cos_3 + cos_1 * sin_3,
-                -sin_1 * cos_2 * sin_3 + cos_1 * cos_3,
+                sin_1 * cos_2 * cos_3 - cos_1 * sin_3,
+                -sin_1 * cos_2 * sin_3 - cos_1 * cos_3,
                 sin_1 * sin_2,
                 length_2 * sin_1 * cos_2
-                + length_3 * (sin_1 * cos_2 * cos_3 + cos_1 * sin_3),
+                + length_3 * (sin_1 * cos_2 * cos_3 - cos_1 * sin_3),
             ],
             [
-                -sin_2 * cos_3,
-                sin_2 * sin_3,
-                cos_2,
+                sin_2 * cos_3,
+                -sin_2 * sin_3,
+                -cos_2,
                 length_1
-                - length_2 * sin_2
-                - length_3 * sin_2 * cos_3,
+                + length_2 * sin_2
+                + length_3 * sin_2 * cos_3,
             ],
             [0.0, 0.0, 0.0, 1.0],
         ]
@@ -153,9 +153,9 @@ def main() -> None:
 
     print("User DH table:")
     print("i | theta_i  | d_i | a_i | alpha_i")
-    print("1 | q1 + 90  | L1  | 0   | -90 deg")
-    print("2 | q2 + 90  | 0   | L2  | +90 deg")
-    print("3 | q3       | 0   | L3  | 0 deg")
+    print("1 | q1 + 90  | 96  | 0   | +90 deg")
+    print("2 | q2 + 90  | 0   | 47  | +90 deg")
+    print("3 | q3       | 0   | 48  | 0 deg")
     print(f"\nAngles [deg] = {angles}")
     print_matrix("T01", transform_01)
     print_matrix("T02", transform_02)

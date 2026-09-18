@@ -75,9 +75,9 @@ python compare_standard_dh.py --angles 30 25 -40
 
 ```text
 i | theta_i  | d_i | a_i | alpha_i
-1 | q1 + 90° | L1  | 0   | -90°
-2 | q2 + 90° | 0   | L2  | +90°
-3 | q3       | 0   | L3  | 0°
+1 | q1 + 90° | 96   | 0   | +90°
+2 | q2 + 90° | 0    | 47  | +90°
+3 | q3       | 0    | 48  | 0°
 ```
 
 可以运行：

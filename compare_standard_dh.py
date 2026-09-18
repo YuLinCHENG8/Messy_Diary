@@ -120,6 +120,32 @@ def standard_dh_forward_transform(
     return transform_03
 
 
+def user_table_dh_forward_transform(
+    mechanism: Mechanism,
+    angles_deg: tuple[float, float, float],
+) -> tuple[Matrix, Matrix, Matrix]:
+    """Return FK transforms using the DH table supplied by the user.
+
+    The table is used exactly as supplied:
+
+        i  theta_i       d_i  a_i  alpha_i
+        1  q1 + 90         L1    0      -90
+        2  q2 + 90          0   L2      +90
+        3  q3               0   L3        0
+
+    The returned values are T_01, T_02, and T_03. This is a classic-DH
+    serial chain; the result is not silently aligned with the original FK.
+    """
+    q1, q2, q3 = angles_deg
+    length_1, length_2, length_3 = mechanism.link_lengths
+    transform_01 = standard_dh_transform(q1 + 90.0, length_1, 0.0, -90.0)
+    transform_12 = standard_dh_transform(q2 + 90.0, 0.0, length_2, 90.0)
+    transform_23 = standard_dh_transform(q3, 0.0, length_3, 0.0)
+    transform_02 = transform_01 @ transform_12
+    transform_03 = transform_02 @ transform_23
+    return transform_01, transform_02, transform_03
+
+
 def compare_forward_kinematics(
     mechanism: Mechanism,
     angles_deg: tuple[float, float, float],
@@ -172,6 +198,21 @@ def print_matrix(name: str, matrix: Matrix) -> None:
     print(np.array2string(matrix, precision=8, suppress_small=True))
 
 
+def print_user_table_fk(
+    mechanism: Mechanism,
+    angles_deg: tuple[float, float, float],
+) -> None:
+    """Print FK matrices and end position for the user's DH table."""
+    transform_01, transform_02, transform_03 = user_table_dh_forward_transform(
+        mechanism,
+        angles_deg,
+    )
+    print_matrix("User DH T_01", transform_01)
+    print_matrix("User DH T_02", transform_02)
+    print_matrix("User DH T_03", transform_03)
+    print(f"\nUser DH end position: {transform_03[:3, 3]}")
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse comparison options."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -188,6 +229,11 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         default=1000,
         help="Number of random joint-limit samples to verify. Default: 1000.",
+    )
+    parser.add_argument(
+        "--user-table",
+        action="store_true",
+        help="Print FK using the supplied q1+90, q2+90 DH table.",
     )
     parser.add_argument("--seed", type=int, default=7, help="Random seed.")
     return parser.parse_args()
@@ -218,6 +264,10 @@ def main() -> None:
     )
     print(f"\nPosition error: {comparison.position_error:.3e}")
     print(f"Rotation error: {comparison.rotation_error:.3e}")
+
+    if arguments.user_table:
+        print("\nFK using the supplied DH table:")
+        print_user_table_fk(mechanism, angles)
 
     maximum_position_error, maximum_rotation_error = verify_random_angles(
         mechanism,

@@ -11,6 +11,7 @@ from compare_standard_dh import (
     compare_forward_kinematics,
     standard_dh_forward_transform,
     standard_dh_transform,
+    user_table_dh_forward_transform,
     verify_random_angles,
 )
 from three_link_workspace import (
@@ -122,6 +123,24 @@ class StandardDhTests(unittest.TestCase):
         aligned = standard_dh_forward_transform(self.mechanism, angles)
         comparison = compare_forward_kinematics(self.mechanism, angles)
         np.testing.assert_allclose(aligned, comparison.original_transform, atol=1e-12)
+
+    def test_user_supplied_dh_table_returns_three_cumulative_transforms(self) -> None:
+        angles = (0.0, 0.0, 0.0)
+        transform_01, transform_02, transform_03 = user_table_dh_forward_transform(
+            self.mechanism,
+            angles,
+        )
+        self.assertEqual(transform_01.shape, (4, 4))
+        self.assertEqual(transform_02.shape, (4, 4))
+        self.assertEqual(transform_03.shape, (4, 4))
+        np.testing.assert_allclose(
+            transform_03,
+            transform_01
+            @ standard_dh_transform(90.0, 0.0, 20.0, 90.0)
+            @ standard_dh_transform(0.0, 0.0, 30.0, 0.0),
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(transform_03[:3, 3], [0.0, 0.0, 50.0], atol=1e-12)
 
 
 class InverseKinematicsTests(unittest.TestCase):

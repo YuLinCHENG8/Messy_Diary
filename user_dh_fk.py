@@ -69,6 +69,62 @@ def forward_kinematics(
     return transform_01, transform_02, transform_03
 
 
+def explicit_end_transform(
+    angles_deg: tuple[float, float, float],
+    link_lengths: tuple[float, float, float] = LINK_LENGTHS,
+) -> np.ndarray:
+    """Return the expanded T03 entries for the supplied DH table.
+
+    The expanded terms use:
+
+        theta_1 = q1 + 90 deg
+        theta_2 = q2 + 90 deg
+        theta_3 = q3
+
+    and therefore make every matrix entry explicit in q1, q2, q3, A6, A7,
+    and A8. This is algebraically identical to ``forward_kinematics``.
+    """
+    q1, q2, q3 = np.deg2rad(angles_deg)
+    length_1, length_2, length_3 = link_lengths
+    theta_1 = q1 + np.pi / 2.0
+    theta_2 = q2 + np.pi / 2.0
+
+    cos_1 = np.cos(theta_1)
+    sin_1 = np.sin(theta_1)
+    cos_2 = np.cos(theta_2)
+    sin_2 = np.sin(theta_2)
+    cos_3 = np.cos(q3)
+    sin_3 = np.sin(q3)
+
+    return np.array(
+        [
+            [
+                cos_1 * cos_2 * cos_3 - sin_1 * sin_3,
+                -cos_1 * cos_2 * sin_3 - sin_1 * cos_3,
+                cos_1 * sin_2,
+                length_2 * cos_1 * cos_2
+                + length_3 * (cos_1 * cos_2 * cos_3 - sin_1 * sin_3),
+            ],
+            [
+                sin_1 * cos_2 * cos_3 + cos_1 * sin_3,
+                -sin_1 * cos_2 * sin_3 + cos_1 * cos_3,
+                sin_1 * sin_2,
+                length_2 * sin_1 * cos_2
+                + length_3 * (sin_1 * cos_2 * cos_3 + cos_1 * sin_3),
+            ],
+            [
+                -sin_2 * cos_3,
+                sin_2 * sin_3,
+                cos_2,
+                length_1
+                - length_2 * sin_2
+                - length_3 * sin_2 * cos_3,
+            ],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+
+
 def print_matrix(name: str, matrix: np.ndarray) -> None:
     """Print a homogeneous transform."""
     print(f"\n{name} =")
@@ -104,6 +160,9 @@ def main() -> None:
     print_matrix("T01", transform_01)
     print_matrix("T02", transform_02)
     print_matrix("T03", transform_03)
+    expanded_transform = explicit_end_transform(angles)
+    np.testing.assert_allclose(transform_03, expanded_transform, atol=1e-12)
+    print_matrix("T03 expanded by q1, q2, q3, A6, A7, A8", expanded_transform)
     print(f"\nEnd position = {transform_03[:3, 3]}")
     print(f"End rotation =\n{transform_03[:3, :3]}")
 

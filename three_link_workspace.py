@@ -18,6 +18,7 @@ JointLimits = tuple[tuple[float, float], tuple[float, float], tuple[float, float
 DEFAULT_ANGLE_LIMITS: JointLimits = ((-180.0, 180.0), (-40.0, 40.0), (-110.0, 110.0))
 REACHABLE_POSITION_TOLERANCE = 1e-3
 AT_LIMIT_TOLERANCE_DEG = 1e-4
+YAW_SINGULAR_TOLERANCE = 1e-8
 
 
 @dataclass(frozen=True)
@@ -71,15 +72,12 @@ class Mechanism:
         """
         q1 = np.deg2rad(angles_deg[:, 0])
         q2 = np.deg2rad(angles_deg[:, 1])
-        q3 = np.deg2rad(angles_deg[:, 2])
         l1, l2, l3 = self.link_lengths
 
         cos_q1 = np.cos(q1)
         sin_q1 = np.sin(q1)
         cos_q2 = np.cos(q2)
         sin_q2 = np.sin(q2)
-        cos_q3 = np.cos(q3)
-        sin_q3 = np.sin(q3)
 
         # Link 1 after Rz(q1): still along world z.
         p1 = np.column_stack((np.zeros_like(q1), np.zeros_like(q1), np.full_like(q1, l1)))
@@ -93,14 +91,43 @@ class Mechanism:
             )
         )
         p2 = p1 + l2 * direction_2
+        return p2 + l3 * self.pointing_directions(angles_deg)
 
-        # Link 3 after Rz(q1) Ry(q2) Rx(q3): local z mapped by the full rotation.
-        # R @ [0,0,1] equals the third column of R = Rz Ry Rx.
-        direction_3_x = cos_q1 * sin_q2 * cos_q3 + sin_q1 * sin_q3
-        direction_3_y = sin_q1 * sin_q2 * cos_q3 - cos_q1 * sin_q3
-        direction_3_z = cos_q2 * cos_q3
-        direction_3 = np.column_stack((direction_3_x, direction_3_y, direction_3_z))
-        return p2 + l3 * direction_3
+    def pointing_directions(self, angles_deg: np.ndarray) -> np.ndarray:
+        """Unit last-link directions in the base frame.
+
+        The direction is ``R @ [0, 0, 1]``, the third column of
+        ``Rz(q1) @ Ry(q2) @ Rx(q3)``. At the zero pose it is +Z. Roll ``q3``
+        swings the link away from that axis, so it belongs in the yaw.
+
+        Args:
+            angles_deg: Array of shape (N, 3) with columns [q1, q2, q3] in degrees.
+
+        Returns:
+            Array of shape (N, 3) with unit pointing directions.
+        """
+        q1 = np.deg2rad(angles_deg[:, 0])
+        q2 = np.deg2rad(angles_deg[:, 1])
+        q3 = np.deg2rad(angles_deg[:, 2])
+        cos_q1 = np.cos(q1)
+        sin_q1 = np.sin(q1)
+        sin_q2 = np.sin(q2)
+        cos_q2 = np.cos(q2)
+        cos_q3 = np.cos(q3)
+        sin_q3 = np.sin(q3)
+        direction_x = cos_q1 * sin_q2 * cos_q3 + sin_q1 * sin_q3
+        direction_y = sin_q1 * sin_q2 * cos_q3 - cos_q1 * sin_q3
+        direction_z = cos_q2 * cos_q3
+        return np.column_stack((direction_x, direction_y, direction_z))
+
+    def zero_pointing_direction(self) -> Vector:
+        """Last-link direction at the zero joint pose ``(0, 0, 0)``."""
+        return self.pointing_directions(np.zeros((1, 3)))[0]
+
+    def yaw_from_zero_deg(self, angles_deg: tuple[float, float, float]) -> float:
+        """Yaw of the last-link direction about the zero-pose pointing axis."""
+        direction = self.pointing_directions(np.array([angles_deg], dtype=float))[0]
+        return float(yaw_from_direction_deg(direction, self.zero_pointing_direction()))
 
     def position_jacobian(self, angles_deg: tuple[float, float, float]) -> Matrix:
         """Return the 3x3 position Jacobian with respect to joint angles in radians."""
@@ -375,6 +402,84 @@ def damped_least_squares_with_locks(
     return delta
 
 
+def reference_axes_from_zero_direction(
+    zero_direction: Vector,
+) -> tuple[Vector, Vector, Vector]:
+    """Build a right-handed frame whose z-axis is the zero-pose direction.
+
+    The x-axis is the zero heading in the plane perpendicular to that
+    direction. When the zero pose points along +Z, this heading is +X, so a
+    positive pitch with q1 = 0 has yaw 0.
+    """
+    z_ref = np.asarray(zero_direction, dtype=float)
+    z_norm = float(np.linalg.norm(z_ref))
+    if z_norm <= 0.0:
+        raise ValueError("zero direction must be non-zero")
+    z_ref = z_ref / z_norm
+    seed = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(seed, z_ref))) > 0.9:
+        seed = np.array([0.0, 1.0, 0.0])
+    x_ref = seed - float(np.dot(seed, z_ref)) * z_ref
+    x_ref = x_ref / np.linalg.norm(x_ref)
+    y_ref = np.cross(z_ref, x_ref)
+    return x_ref, y_ref, z_ref
+
+
+def yaw_from_direction_deg(
+    direction: Vector,
+    zero_direction: Vector,
+    singular_tolerance: float = YAW_SINGULAR_TOLERANCE,
+) -> float:
+    """Return the yaw, in degrees, of ``direction`` about the zero-pose axis.
+
+    Project ``direction`` onto the plane perpendicular to the zero-pose
+    pointing direction and measure it from the zero heading:
+
+        yaw = atan2(direction · y_ref, direction · x_ref)
+
+    For this mechanism the zero pointing direction is +Z and the zero heading
+    is +X, which reduces to ``atan2(direction_y, direction_x)``. Roll is
+    included because ``Rx(q3)`` changes the last-link direction. When the
+    direction is not parallel to the zero axis, the same angle is
+
+        yaw = q1 - atan2(sin(q3), sin(q2) * cos(q3))
+
+    When the last link is parallel to the zero axis, the perpendicular part
+    vanishes and yaw is undefined.
+    """
+    x_ref, y_ref, _z_ref = reference_axes_from_zero_direction(zero_direction)
+    vector = np.asarray(direction, dtype=float)
+    east = float(np.dot(vector, x_ref))
+    north = float(np.dot(vector, y_ref))
+    if east * east + north * north <= singular_tolerance**2:
+        return float("nan")
+    return float(np.rad2deg(np.arctan2(north, east)))
+
+
+def yaw_from_directions_deg(
+    directions: np.ndarray,
+    zero_direction: Vector,
+    singular_tolerance: float = YAW_SINGULAR_TOLERANCE,
+) -> np.ndarray:
+    """Vectorized yaw of many directions about one zero-pose axis."""
+    x_ref, y_ref, _z_ref = reference_axes_from_zero_direction(zero_direction)
+    vectors = np.asarray(directions, dtype=float)
+    east = vectors @ x_ref
+    north = vectors @ y_ref
+    yaw_deg = np.rad2deg(np.arctan2(north, east))
+    singular = east * east + north * north <= singular_tolerance**2
+    yaw_deg = np.array(yaw_deg, dtype=float, copy=True)
+    yaw_deg[singular] = np.nan
+    return yaw_deg
+
+
+def format_pointing_yaw(yaw_deg: float) -> str:
+    """Format yaw of the last link about the zero-pose axis."""
+    if not np.isfinite(yaw_deg):
+        return "pointing yaw undefined (parallel to zero axis)"
+    return f"pointing yaw from zero={yaw_deg:.1f}°"
+
+
 def inclusive_samples(lower: float, upper: float, step: float) -> np.ndarray:
     """Return evenly stepped values and include the upper limit."""
     values = np.arange(lower, upper, step)
@@ -392,25 +497,45 @@ def default_joint_steps(base_step: float) -> tuple[float, float, float]:
     )
 
 
-def sample_reachable_workspace(
-    mechanism: Mechanism,
+def joint_angle_grid(
     angle_limits: JointLimits,
     steps_deg: tuple[float, float, float],
 ) -> np.ndarray:
-    """Sample reachable end-effector positions inside joint limits."""
+    """Return joint-limit samples of shape (N, 3)."""
     angle_grids = [
         inclusive_samples(limits[0], limits[1], step)
         for limits, step in zip(angle_limits, steps_deg)
     ]
     q1_grid, q2_grid, q3_grid = np.meshgrid(*angle_grids, indexing="ij")
-    angles = np.column_stack(
+    return np.column_stack(
         (
             q1_grid.ravel(),
             q2_grid.ravel(),
             q3_grid.ravel(),
         )
     )
-    return mechanism.end_positions(angles)
+
+
+def sample_reachable_workspace(
+    mechanism: Mechanism,
+    angle_limits: JointLimits,
+    steps_deg: tuple[float, float, float],
+) -> np.ndarray:
+    """Sample reachable end-effector positions inside joint limits."""
+    return mechanism.end_positions(joint_angle_grid(angle_limits, steps_deg))
+
+
+def sample_pointing_yaw_deg(
+    mechanism: Mechanism,
+    angle_limits: JointLimits,
+    steps_deg: tuple[float, float, float],
+) -> np.ndarray:
+    """Sample yaw of the last-link direction relative to the zero pose.
+
+    Samples with the last link parallel to the zero-pose axis are NaN.
+    """
+    directions = mechanism.pointing_directions(joint_angle_grid(angle_limits, steps_deg))
+    return yaw_from_directions_deg(directions, mechanism.zero_pointing_direction())
 
 
 def set_equal_axes(axis: plt.Axes, points: np.ndarray) -> None:
@@ -603,10 +728,11 @@ def plot_workspace(
         pose_axis.set_zlabel("Z")
         set_equal_axes(pose_axis, pose_bounds)
         pose_axis.legend(fontsize="small")
+        yaw_line = format_pointing_yaw(mechanism.yaw_from_zero_deg(angles))
         if result is None:
-            status_text.set_text("Joint-space pose | tip is the IK target")
+            status_text.set_text(f"Joint-space pose | tip is the IK target | {yaw_line}")
         else:
-            status_text.set_text(ik_status_text(result))
+            status_text.set_text(f"{ik_status_text(result)} | {yaw_line}")
 
     def update_from_joint_sliders(_value: float) -> None:
         if ui_state["busy"]:
@@ -796,14 +922,29 @@ def main() -> None:
     positions, end_rotation = mechanism.forward_kinematics(example_angles)
 
     horizontal_radius = np.linalg.norm(workspace_points[:, :2], axis=1)
+    zero_direction = mechanism.zero_pointing_direction()
+    heading_x, heading_y, heading_z = reference_axes_from_zero_direction(zero_direction)
+    example_direction = mechanism.pointing_directions(np.array([example_angles], dtype=float))[0]
+    example_yaw = mechanism.yaw_from_zero_deg(example_angles)
+    yaw_samples = sample_pointing_yaw_deg(mechanism, angle_limits, steps_deg)
+    finite_yaw = yaw_samples[np.isfinite(yaw_samples)]
     print(f"Sample count: {len(workspace_points)}")
     print(f"Joint steps [deg]: q1={steps_deg[0]}, q2={steps_deg[1]}, q3={steps_deg[2]}")
     print(f"Reachable XYZ min: {workspace_points.min(axis=0)}")
     print(f"Reachable XYZ max: {workspace_points.max(axis=0)}")
     print(f"Reachable XY radius range: [{horizontal_radius.min():.2f}, {horizontal_radius.max():.2f}]")
+    print(f"Zero-pose pointing direction: {zero_direction}")
+    print(f"Yaw reference axes x, y, z:\n{heading_x}\n{heading_y}\n{heading_z}")
     print(f"Example angles (q1, q2, q3) [deg]: {example_angles}")
     print(f"End position [x, y, z]:\n{positions[-1]}")
     print(f"End rotation Rz(q1) @ Ry(q2) @ Rx(q3):\n{end_rotation}")
+    print(f"Example pointing direction: {example_direction}")
+    print(f"Example yaw from zero direction [deg]: {example_yaw:.6f}")
+    print(
+        "Pointing-yaw samples: "
+        f"finite={len(finite_yaw)}, singular={int(np.isnan(yaw_samples).sum())}, "
+        f"range=[{finite_yaw.min():.2f}, {finite_yaw.max():.2f}]"
+    )
 
     if arguments.export_html is not None:
         export_workspace_html(

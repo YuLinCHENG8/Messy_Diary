@@ -19,7 +19,11 @@ from three_link_workspace import (
     Mechanism,
     clip_angles_deg,
     continuous_angle_deg,
+    joint_angle_grid,
+    sample_pointing_yaw_deg,
     wrap_angle_deg,
+    yaw_from_direction_deg,
+    yaw_from_directions_deg,
 )
 
 
@@ -38,6 +42,74 @@ class WrapAngleTests(unittest.TestCase):
         self.assertAlmostEqual(unwrapped, 181.0)
         clipped = clip_angles_deg((unwrapped, 0.0, 0.0), DEFAULT_ANGLE_LIMITS)
         self.assertAlmostEqual(clipped[0], 180.0)
+
+
+class YawFromZeroDirectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mechanism = Mechanism()
+
+    def test_zero_pose_direction_is_positive_z_and_yaw_is_undefined(self) -> None:
+        np.testing.assert_allclose(
+            self.mechanism.zero_pointing_direction(),
+            [0.0, 0.0, 1.0],
+            atol=1e-12,
+        )
+        self.assertTrue(np.isnan(self.mechanism.yaw_from_zero_deg((0.0, 0.0, 0.0))))
+        self.assertTrue(np.isnan(self.mechanism.yaw_from_zero_deg((45.0, 0.0, 0.0))))
+
+    def test_pointing_direction_is_the_end_frame_z_axis(self) -> None:
+        angles = (30.0, 25.0, -40.0)
+        _positions, rotation = self.mechanism.forward_kinematics(angles)
+        direction = self.mechanism.pointing_directions(np.array([angles], dtype=float))[0]
+        np.testing.assert_allclose(direction, rotation[:, 2], atol=1e-12)
+
+    def test_yaw_matches_joint_expression_and_includes_roll(self) -> None:
+        zero_direction = self.mechanism.zero_pointing_direction()
+        samples = (
+            (0.0, 40.0, 0.0),
+            (90.0, 25.0, 0.0),
+            (-30.0, 10.0, 40.0),
+            (120.0, -20.0, -50.0),
+            (0.0, 0.0, 30.0),
+            (15.0, 0.0, -80.0),
+        )
+        for angles in samples:
+            q1, q2, q3 = np.deg2rad(angles)
+            expected = np.rad2deg(q1 - np.arctan2(np.sin(q3), np.sin(q2) * np.cos(q3)))
+            direction = self.mechanism.pointing_directions(np.array([angles], dtype=float))[0]
+            yaw = yaw_from_direction_deg(direction, zero_direction)
+            self.assertAlmostEqual(wrap_angle_deg(yaw - expected), 0.0, delta=1e-8)
+            self.assertAlmostEqual(self.mechanism.yaw_from_zero_deg(angles), yaw, delta=1e-8)
+
+    def test_pitch_without_roll_keeps_yaw_on_q1_or_its_opposite(self) -> None:
+        self.assertAlmostEqual(self.mechanism.yaw_from_zero_deg((35.0, 20.0, 0.0)), 35.0, delta=1e-8)
+        self.assertAlmostEqual(self.mechanism.yaw_from_zero_deg((-20.0, -15.0, 0.0)), 160.0, delta=1e-8)
+
+    def test_pure_roll_points_the_yaw_to_negative_y(self) -> None:
+        self.assertAlmostEqual(self.mechanism.yaw_from_zero_deg((0.0, 0.0, 30.0)), -90.0, delta=1e-8)
+
+    def test_vectorized_yaw_matches_scalar_and_marks_the_zero_axis(self) -> None:
+        angles = np.array(
+            [
+                [0.0, 20.0, 10.0],
+                [40.0, -10.0, 30.0],
+                [10.0, 0.0, 0.0],
+            ]
+        )
+        directions = self.mechanism.pointing_directions(angles)
+        batch = yaw_from_directions_deg(directions, self.mechanism.zero_pointing_direction())
+        self.assertAlmostEqual(batch[0], self.mechanism.yaw_from_zero_deg((0.0, 20.0, 10.0)))
+        self.assertAlmostEqual(batch[1], self.mechanism.yaw_from_zero_deg((40.0, -10.0, 30.0)))
+        self.assertTrue(np.isnan(batch[2]))
+
+    def test_workspace_samples_include_the_roll_limits(self) -> None:
+        steps = (180.0, 40.0, 110.0)
+        angles = joint_angle_grid(DEFAULT_ANGLE_LIMITS, steps)
+        yaw = sample_pointing_yaw_deg(self.mechanism, DEFAULT_ANGLE_LIMITS, steps)
+        at_roll_limit = np.isclose(np.abs(angles[:, 2]), 110.0)
+        self.assertTrue(np.any(at_roll_limit))
+        self.assertTrue(np.any(np.isfinite(yaw[at_roll_limit])))
+        self.assertTrue(np.any(np.isnan(yaw)))
 
 
 class JacobianTests(unittest.TestCase):
